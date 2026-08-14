@@ -23,6 +23,7 @@
 /* USER CODE BEGIN Includes */
 #include "DRV8251A.h"
 #include "stm32f303xe.h"
+#include "stm32f3xx_hal_tim.h"
 #include <stdio.h>
 #include <string.h>
 /* USER CODE END Includes */
@@ -46,6 +47,7 @@
 ADC_HandleTypeDef hadc1;
 DMA_HandleTypeDef hdma_adc1;
 
+TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
 
 UART_HandleTypeDef huart2;
@@ -54,6 +56,8 @@ UART_HandleTypeDef huart2;
 DRV8251A_HandleTypeDef motor;
 uint16_t adc_dma_buffer[ADC_BUF_SIZE]; // El buffer en la RAM
 char msg[64];
+
+static volatile _Bool counterTriggered = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -63,8 +67,9 @@ static void MX_DMA_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
-
+void Task_Motor(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -105,6 +110,7 @@ int main(void)
   MX_ADC1_Init();
   MX_TIM3_Init();
   MX_USART2_UART_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
   motor.htim = &htim3;
   motor.channel1 = TIM_CHANNEL_1; // IN1 -> PB4
@@ -123,6 +129,8 @@ int main(void)
 
   HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_dma_buffer, ADC_BUF_SIZE);
 
+  HAL_TIM_Base_Start_IT(&htim2);
+
   // Arrancar el motor
   DRV8251A_SetSpeed(&motor, 1000); // 60% adelante
 
@@ -132,14 +140,7 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    double current = DRV8251A_ReadCurrentDMA(&motor);
-    snprintf(msg, sizeof(msg), "Current: %.3f mA\r\n", current*1000.0);
-    HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
-    if (current > 1.8f)
-    {
-        DRV8251A_Brake(&motor);
-    }
-    HAL_Delay(100);
+    Task_Motor();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -185,8 +186,10 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
-  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USART2|RCC_PERIPHCLK_TIM34;
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USART2|RCC_PERIPHCLK_TIM2
+                              |RCC_PERIPHCLK_TIM34;
   PeriphClkInit.Usart2ClockSelection = RCC_USART2CLKSOURCE_PCLK1;
+  PeriphClkInit.Tim2ClockSelection = RCC_TIM2CLK_HCLK;
   PeriphClkInit.Tim34ClockSelection = RCC_TIM34CLK_HCLK;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
   {
@@ -257,6 +260,51 @@ static void MX_ADC1_Init(void)
   /* USER CODE BEGIN ADC1_Init 2 */
 
   /* USER CODE END ADC1_Init 2 */
+
+}
+
+/**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 144-1;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 50000-1;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
 
 }
 
@@ -404,7 +452,43 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+    if (htim->Instance == TIM2)
+    {
+        counterTriggered = 1;
+    }
+}
 
+void Task_Motor(void)
+{
+    if (counterTriggered)
+    {
+        counterTriggered = 0;
+        
+        // Comprobar fallas críticas de hardware en el chip
+        if (DRV8251A_CheckFault(&motor))
+        {
+            DRV8251A_Brake(&motor); // Frenado inmediato por seguridad
+            snprintf(msg, sizeof(msg), "ERROR: Hardware Fault Detected!\r\n");
+            HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
+            return; // Salir de la función para no volver a acelerar el motor
+        }
+
+        // Medir corriente
+        double current = DRV8251A_ReadCurrentDMA(&motor);
+
+        snprintf(msg, sizeof(msg), "Current: %.3f mA\r\n", current*1000.0);
+        HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
+
+        if (current > 1.8f)
+        {
+            DRV8251A_Brake(&motor);
+            snprintf(msg, sizeof(msg), "WARNING: Software Overcurrent Shutdown!\r\n");
+            HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), 100);
+        }
+    }
+}
 /* USER CODE END 4 */
 
 /**
