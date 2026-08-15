@@ -74,3 +74,5 @@ target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
     -u_printf_float
     -u_scanf_float
 )
+set(ACTIVE_MAIN "MAIN_2")
+include(D:/STM32_Projects/stm32_helper.cmake)

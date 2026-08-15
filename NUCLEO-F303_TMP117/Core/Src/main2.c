@@ -22,6 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "TMP117.h"
+#include "stm32f3xx_hal_tim.h"
 #include <stdio.h>
 #include <string.h>
 /* USER CODE END Includes */
@@ -54,6 +55,8 @@ char msg[32];
 double lowLimitTemp   = 50.0;
 double highLimitTemp  = 100.0;
 double temp           = 0.0;
+
+static volatile _Bool timerTriggered = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -63,7 +66,8 @@ static void MX_I2C1_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
-
+void TMP117_Initialization(void);
+void Task_Read_TMP117(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -105,33 +109,15 @@ int main(void)
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
   HAL_Delay(2);
-
-  TMP117_Init(&tmp117, &hi2c1, TMP117_ADDRESS);
-
-  if (TMP117_SetConvTime(&tmp117, TMP117_CONV_4_S) != HAL_OK)
-  {
-    char buffer[100];
-    snprintf(buffer, sizeof(buffer), "ERROR: requested time (%.1f ms) is less than active time (%.1f ms)\r\n", tmp117._requestedTime, tmp117._activeTime);
-    HAL_UART_Transmit(&huart2, (uint8_t *)buffer, strlen(buffer), HAL_MAX_DELAY);
-  }
-
-  TMP117_SetLowLimit_C(&tmp117, lowLimitTemp);
-  TMP117_SetHighLimit_C(&tmp117, highLimitTemp);
+  HAL_TIM_Base_Start_IT(&htim2);
+  TMP117_Initialization();
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    _Bool isDataReady = TMP117_IsDataReady(&tmp117);
-    
-    if (isDataReady)
-    {
-      temp = TMP117_GetTemperature_C(&tmp117);
-
-      snprintf(msg, sizeof(msg), "Temperature: %.2f %cC\r\n", temp, 0xB0);
-      HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
-    }
+    Task_Read_TMP117();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -181,7 +167,7 @@ void SystemClock_Config(void)
                               |RCC_PERIPHCLK_TIM2;
   PeriphClkInit.Usart2ClockSelection = RCC_USART2CLKSOURCE_PCLK1;
   PeriphClkInit.I2c1ClockSelection = RCC_I2C1CLKSOURCE_HSI;
-  PeriphClkInit.Tim2ClockSelection = RCC_TIM2CLK_HCLK;
+  PeriphClkInit.Tim1ClockSelection = RCC_TIM2CLK_HCLK;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
   {
     Error_Handler();
@@ -356,7 +342,44 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+    if (htim->Instance == TIM2)
+    {
+        timerTriggered = 1;
+    }
+}
 
+void TMP117_Initialization(void)
+{
+    TMP117_Init(&tmp117, &hi2c1, TMP117_ADDRESS);
+
+    if (TMP117_SetConvTime(&tmp117, TMP117_CONV_4_S) != HAL_OK)
+    {
+        char buffer[100];
+        snprintf(buffer, sizeof(buffer), "ERROR: requested time (%.1f ms) is less than active time (%.1f ms)\r\n", tmp117._requestedTime, tmp117._activeTime);
+        HAL_UART_Transmit(&huart2, (uint8_t *)buffer, strlen(buffer), HAL_MAX_DELAY);
+    }
+
+    TMP117_SetLowLimit_C(&tmp117, lowLimitTemp);
+    TMP117_SetHighLimit_C(&tmp117, highLimitTemp);
+}
+
+void Task_Read_TMP117(void)
+{
+
+    if (timerTriggered)
+    {
+        timerTriggered = 0;
+
+        if (TMP117_IsDataReady(&tmp117))
+        {
+            temp = TMP117_GetTemperature_C(&tmp117);
+            snprintf(msg, sizeof(msg), "Temperature: %.2f %cC\r\n", temp, 0xB0);
+            HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), HAL_MAX_DELAY);
+        }
+    }
+}
 /* USER CODE END 4 */
 
 /**
