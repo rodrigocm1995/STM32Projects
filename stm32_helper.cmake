@@ -1,17 +1,21 @@
 # stm32_helper.cmake - Configuración automatizada global de proyectos STM32
 
-# 1. Búsqueda automática de archivos fuentes (.c y .cpp) en Core
+# 1. Búsqueda automática de archivos fuentes (.c y .cpp) en Core y en la carpeta Common global
 file(GLOB_RECURSE USER_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/Core/**/*.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/Core/**/*.cpp"
+    "D:/STM32_Projects/Common/**/*.c"
+    "D:/STM32_Projects/Common/**/*.cpp"
 )
 list(FILTER USER_SOURCES EXCLUDE REGEX ".*/Core/Src/[^/]+\\.c$")
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE ${USER_SOURCES})
 
-# 2. Búsqueda automática de carpetas con archivos de cabecera (.h y .hpp)
+# 2. Búsqueda automática de carpetas con archivos de cabecera (.h y .hpp) en Core y Common
 file(GLOB_RECURSE HEADER_FILES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/Core/**/*.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/Core/**/*.hpp"
+    "D:/STM32_Projects/Common/**/*.h"
+    "D:/STM32_Projects/Common/**/*.hpp"
 )
 set(USER_INCLUDE_DIRS "")
 foreach(HEADER_FILE ${HEADER_FILES})
