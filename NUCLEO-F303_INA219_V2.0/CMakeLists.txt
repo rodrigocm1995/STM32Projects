@@ -67,4 +67,5 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
     # Add user defined libraries
 )
 
+set(ACTIVE_MAIN "MAIN_1")
 include(D:/STM32_Projects/stm32_helper.cmake)

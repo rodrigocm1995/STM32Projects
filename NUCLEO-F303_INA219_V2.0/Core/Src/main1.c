@@ -21,9 +21,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include <stdio.h>
-#include <string.h>
 #include "INA219.h"
+#include "console_uart.h"
 #include "stm32f3xx_hal_def.h"
 #include "stm32f3xx_hal_uart.h"
 /* USER CODE END Includes */
@@ -53,7 +52,7 @@ DMA_HandleTypeDef hdma_usart2_tx;
 
 /* USER CODE BEGIN PV */
 float rShunt = 0.1f;
-float maxCurrent = 1.0f; 
+float maxCurrent = 2.0f; 
 char msg[64];
 
 static volatile _Bool counterTick = 0;
@@ -110,7 +109,8 @@ int main(void)
   MX_USART2_UART_Init();
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
-  MX_INA219_Init();               
+  MX_INA219_Init();
+  Console_Init(&huart2);               
   HAL_TIM_Base_Start_IT(&htim2);  
   /* USER CODE END 2 */
 
@@ -363,24 +363,19 @@ void MX_INA219_Init(void)
 {
     if (INA219_Init(&hina219, &hi2c1, INA219_DEFAULT_ADDRESS) != HAL_OK)
     {
-        snprintf(msg, sizeof(msg), "ERROR: Could not communicate with the INA219 via I2C.\r\n");
-        HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), 100);
+        Console_Printf("ERROR: Could not communicate with the INA219 via I2C.\r\n");
         Error_Handler();
     }
 
-    snprintf(msg, sizeof(msg), "INA219 detected and successfully configured\r\n");
-    HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), 100);
+    Console_Printf("INA219 detected and successfully configured\r\n");
 
     if (INA219_SetCalibration(&hina219, rShunt, maxCurrent) != HAL_OK)
     {
-        snprintf(msg, sizeof(msg), "ERROR: Sensor calibration failed.\r\n");
-        HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), 100);
+        Console_Printf("ERROR: Sensor calibration failed.\r\n");
         Error_Handler();
     }
 
-    snprintf(msg, sizeof(msg), "Calibration loaded successfully.\r\n");
-    HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), 100);
-    
+    Console_Printf("Calibration loaded successfully.\r\n");
 }
 
 void Task_Read_PowerMonitor(void)
@@ -405,25 +400,15 @@ void Task_Read_PowerMonitor(void)
 
             if (status == HAL_OK)
             {
-                snprintf(msg, sizeof(msg), "INA219 Readings.\r\n");
-                HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), 100);
-
-                snprintf(msg, sizeof(msg), "Bus voltage:   %6.3f V\r\n", busVoltage);
-                HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), 100);
-
-                snprintf(msg, sizeof(msg), "Shunt Voltage: %6.3f mV\r\n", shuntVoltage);
-                HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), 100);
-
-                snprintf(msg, sizeof(msg), "Current:       %6.3f A (%.1f mA)\r\n", current, current * 1000.0f);
-                HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), 100);
-
-                snprintf(msg, sizeof(msg), "Power:         %6.3f W (%.1f mW)\r\n", power, power * 1000.0f);
-                HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), 100);
+                Console_Printf("INA219 Readings.\r\n");
+                Console_Printf("Bus voltage:   %6.3f V\r\n", busVoltage);
+                Console_Printf("Shunt Voltage: %6.3f mV\r\n", shuntVoltage);
+                Console_Printf("Current:       %6.3f A (%.1f mA)\r\n", current, current * 1000.0f);
+                Console_Printf("Power:         %6.3f W (%.1f mW)\r\n\n", power, power * 1000.0f);
             }
             else 
             {
-                snprintf(msg, sizeof(msg), "ERROR: Error al realizar la lectura I2C.\r\n");
-                HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), 100);
+                Console_Printf("ERROR: Error al realizar la lectura I2C.\r\n");
             }
         }
     }
