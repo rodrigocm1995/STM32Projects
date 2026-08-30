@@ -102,7 +102,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
   Console_Init(&huart2);
   HAL_TIM_Base_Start_IT(&htim2);
-  OPT3001_App_Init();
+  OPT3001_App_Init(&hi2c1, &counterTick);
   /* USER CODE END 2 */
 
   /* Infinite loop */

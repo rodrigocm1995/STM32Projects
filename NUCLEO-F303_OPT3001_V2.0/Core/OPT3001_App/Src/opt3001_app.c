@@ -3,42 +3,60 @@
 #include "console_uart.h"
 #include "stm32f3xx_hal_i2c.h"
 
-/* Variables externas definidas en main.c */
-extern I2C_HandleTypeDef hi2c1;
-extern volatile uint8_t counterTick;
-
 /* Variables privadas de la aplicación de luz */
 static OPT3001_HandleTypeDef hopt3001;
 static float lowLimit = 50000.0f;
 static float highLimit = 80000.0f;
 static uint8_t counterOverflow = 8;    // Valor por defecto seguro (800 ms)
 
-void OPT3001_App_Init(void)
+/* Puntero para inyectar la variable de tiempo del sistema */
+static I2C_HandleTypeDef *h_i2c = NULL;
+static volatile uint8_t *pCounterTick = NULL;
+
+/**
+  * @brief  Inicializa la aplicación inyectando el bus I2C y la variable de control de tiempo.
+  * @param  hi2c: Puntero al bus I2C físico que usará el sensor (ej. &hi2c1 o &hi2c2).
+  * @param  ptick: Puntero a la variable que almacena los ticks de este sensor.
+  */
+void OPT3001_App_Init(I2C_HandleTypeDef *hi2c, volatile uint8_t *ptick)
 {
-    if (OPT3001_Init(&hopt3001, &hi2c1, OPT3001_ADDRESS) != HAL_OK)
+
+    if (hi2c == NULL || ptick == NULL)
+    {
+        return;
+    }
+
+    // Guardamos la referencia de la variable de tiempo
+    pCounterTick = ptick;
+
+    if (OPT3001_Init(&hopt3001, hi2c, OPT3001_ADDRESS) != HAL_OK)
     {
         Console_Printf("Error. Could not communicate with the OPT3001 via I2C.\r\n");
         Error_Handler();
     }
     Console_Printf("OPT3001 detected and successfully configured.\r\n");
+
     if (OPT3001_SetLowLimit(&hopt3001, lowLimit) != HAL_OK)
     {
         Console_Printf("Error. Could not set the low limit lux.\r\n");
         Error_Handler();
     }
     Console_Printf("OPT3001 set the low limit lux to %.2f successfully.\r\n", lowLimit);
+
     if (OPT3001_SetHighLimit(&hopt3001, highLimit) != HAL_OK)
     {
         Console_Printf("Error. Could not set the high limit lux.\r\n");
         Error_Handler();
     }
     Console_Printf("OPT3001 set the high limit lux to %.2f successfully.\r\n", highLimit);
+
     if (OPT3001_SetConvTime(&hopt3001, OPT3001_800_MS) != HAL_OK)
     {
         Console_Printf("Error. Could not set the conversion time.\r\n");
         Error_Handler();
     }
     Console_Printf("The conversion time was successfully established.\r\n");
+
     OPT3001_ConvTime_TypeDef currentConvTime;
     if (OPT3001_GetConvTime(&hopt3001, &currentConvTime) == HAL_OK)
     {
@@ -57,9 +75,10 @@ void OPT3001_App_Init(void)
 
 void OPT3001_App_Task(void)
 {
-    if (counterTick >= counterOverflow)
+    if (*pCounterTick >= counterOverflow)
     {
-        counterTick = 0;
+        *pCounterTick = 0;
+
         if (OPT3001_IsConversionReady(&hopt3001))
         {
             float lux = 0.0f;
