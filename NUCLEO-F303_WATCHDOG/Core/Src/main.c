@@ -109,9 +109,9 @@ int main(void)
   /* USER CODE BEGIN 2 */
   Console_Init(&huart2);
   Watchdog_Check_Reset_Reason();
-  Watchdog_Init();
-  OPT3001_App_Init();
-  TMP117_App_Init();
+  Watchdog_Init(&hiwdg);
+  OPT3001_App_Init(&hi2c1, &opt3001CounterTick);
+  TMP117_App_Init(&hi2c1, &tmp117CounterTick);
   HAL_TIM_Base_Start_IT(&htim2);
 
   /* USER CODE END 2 */

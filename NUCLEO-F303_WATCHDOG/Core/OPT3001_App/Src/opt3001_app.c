@@ -4,19 +4,23 @@
 #include "stm32f3xx_hal_i2c.h"
 #include "watchdog_app.h"
 
-/* Variables externas definidas en main.c */
-extern I2C_HandleTypeDef hi2c1;
-extern volatile uint8_t opt3001CounterTick;
-
 /* Variables privadas de la aplicación de luz */
 static OPT3001_HandleTypeDef hopt3001;
 static float lowLimit = 50000.0f;
 static float highLimit = 80000.0f;
 static uint8_t counterOverflow = 8;    // Valor por defecto seguro (800 ms)
+static volatile uint8_t *pOpt3001CounterTick = NULL;
 
-void OPT3001_App_Init(void)
+void OPT3001_App_Init(I2C_HandleTypeDef *hi2c, volatile uint8_t *pAlstick)
 {
-    if (OPT3001_Init(&hopt3001, &hi2c1, OPT3001_ADDRESS) != HAL_OK)
+    if (hi2c == NULL || pAlstick == NULL)
+    {
+        return;
+    }
+
+    pOpt3001CounterTick = pAlstick;
+
+    if (OPT3001_Init(&hopt3001, hi2c, OPT3001_ADDRESS) != HAL_OK)
     {
         Console_Printf("Error. Could not communicate with the OPT3001 via I2C.\r\n");
         Error_Handler();
@@ -62,9 +66,10 @@ void OPT3001_App_Init(void)
 
 void OPT3001_App_Task(void)
 {
-    if (opt3001CounterTick >= 2)
+    if (*pOpt3001CounterTick >= 2)
     {
-        opt3001CounterTick = 0;
+        *pOpt3001CounterTick = 0;
+
         if (OPT3001_IsConversionReady(&hopt3001))
         {
             float lux = 0.0f;

@@ -4,18 +4,23 @@
 #include "main.h"
 #include "watchdog_app.h"
 
-/* Variables externas definidas en main.c */
-extern I2C_HandleTypeDef hi2c1;
-extern volatile uint8_t tmp117CounterTick;
 
 /* Variables privadas */
 static TMP117_HandleTypeDef htmp117;
 static float highLimitTemp = 55.0f;
 static float lowLimitTemp = 35.0f;
+static volatile uint8_t *pTmp117CounterTick = NULL;
 
-void TMP117_App_Init(void)
+void TMP117_App_Init(I2C_HandleTypeDef *hi2c, volatile uint8_t *pTemptick)
 {
-    if (TMP117_Init(&htmp117, &hi2c1, TMP117_ADDRESS) != HAL_OK)
+    if (hi2c == NULL || pTemptick == NULL)
+    {
+        return;
+    }
+
+    pTmp117CounterTick = pTemptick;
+
+    if (TMP117_Init(&htmp117, hi2c, TMP117_ADDRESS) != HAL_OK)
     {
         Console_Printf("TMP117 Error. Could not communicate with the TMP117 via I2C.\r\n");
         Error_Handler();
@@ -46,9 +51,9 @@ void TMP117_App_Init(void)
 
 void TMP117_App_Task(void)
 {
-    if (tmp117CounterTick >= 4)
+    if (*pTmp117CounterTick >= 4)
     {
-        tmp117CounterTick = 0;
+        *pTmp117CounterTick = 0;
         if (TMP117_IsDataReady(&htmp117))
         {
             float temp = 0.0f;

@@ -12,7 +12,7 @@ typedef enum
 } SystemTask_ID_TypeDef;
 
 /* Se Inicializa las variables de control de software */
-void Watchdog_Init(void);
+void Watchdog_Init(IWDG_HandleTypeDef *hiwdg);
 
 /* Se revisa el origen del último reset y limpia las banderas */
 void Watchdog_Check_Reset_Reason(void);

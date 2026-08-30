@@ -2,14 +2,14 @@
 #include "console_uart.h"
 #include "stm32f3xx_hal_iwdg.h"
 
-/* Variables externas del sistema */
-extern IWDG_HandleTypeDef hiwdg;
+static IWDG_HandleTypeDef *h_iwdg = NULL;
 
 /* Array del estado de salud para cada tarea del sistema */
 static volatile uint8_t task_status[TASK_COUNT] = {0};
 
-void Watchdog_Init(void)
+void Watchdog_Init(IWDG_HandleTypeDef *hiwdg)
 {
+    h_iwdg = hiwdg;
     // Inicializar el estado de salud de todas las tareas a 0 (no reportado)
     for (uint8_t i = 0; i < TASK_COUNT; i++)
     {
@@ -48,7 +48,10 @@ void Watchdog_Monitor_And_Feed(void)
         }
         
         // Alimentamos físicamente al periférico de hardware
-        HAL_IWDG_Refresh(&hiwdg);
+        if (h_iwdg != NULL)
+        {
+            HAL_IWDG_Refresh(h_iwdg);
+        }
     }
     // Si alguna tarea falló, no alimentamos al IWDG y dejamos que la placa se reinicie.
 }
