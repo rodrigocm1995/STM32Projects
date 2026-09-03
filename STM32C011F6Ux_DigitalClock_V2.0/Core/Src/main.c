@@ -111,7 +111,7 @@ int main(void)
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
   Internal_Temp_App_Init(&hadc1);
-  Clock_App_Init(&hrtc, &hspi1);
+  Clock_App_Init(&hrtc, &hspi1, &htim3);
   HAL_TIM_Base_Start_IT(&htim3);
   /* USER CODE END 2 */
 

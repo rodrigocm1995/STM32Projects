@@ -1,45 +1,28 @@
-/**
-  ******************************************************************************
-  * @file           : internal_temp_app.h
-  * @brief          : Header for STM32C0 internal temperature acquisition application.
-  ******************************************************************************
-  */
-
 #ifndef INTERNAL_TEMP_APP_H_
 #define INTERNAL_TEMP_APP_H_
 
 #include "main.h"
-#include "stm32c0xx_hal_adc.h"
 
 /**
-  * @brief  Initializes the internal temperature application, calibrating and starting ADC DMA.
-  * @param  hadc: Pointer to ADC handle structure.
+  * @brief  Inicializa la aplicación de medición de temperatura interna.
+  *         Configura la calibración del ADC y arranca la conversión continua vía DMA.
+  * @param  hadc: Puntero al manejador de ADC1.
   * @retval None
   */
 void Internal_Temp_App_Init(ADC_HandleTypeDef *hadc);
 
 /**
-  * @brief  Periodic background task that processes ADC samples and calculates temperature.
+  * @brief  Tarea cíclica que evalúa si la conversión de DMA ha terminado,
+  *         calcula la temperatura compensando las variaciones de VDDA 
+  *         y actualiza la lectura almacenada.
   * @retval None
   */
 void Internal_Temp_App_Task(void);
 
 /**
-  * @brief  Retrieves the latest calculated temperature in degrees Celsius.
-  * @retval float: Current temperature in °C.
+  * @brief  Retorna el último valor de temperatura calculado.
+  * @retval double: Temperatura en grados Celsius (°C).
   */
-float Internal_Temp_App_GetTemp(void);
-
-/**
-  * @brief  Disables ADC conversions, DMA, internal sensor buffers and clock for low power mode.
-  * @retval None
-  */
-void Internal_Temp_App_Stop(void);
-
-/**
-  * @brief  Restores ADC clock, internal sensor paths, and resumes circular DMA conversions.
-  * @retval None
-  */
-void Internal_Temp_App_Resume(void);
+double Internal_Temp_App_GetTemp(void);
 
 #endif /* INTERNAL_TEMP_APP_H_ */
