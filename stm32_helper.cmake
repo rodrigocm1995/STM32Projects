@@ -8,6 +8,20 @@ file(GLOB_RECURSE USER_SOURCES CONFIGURE_DEPENDS
     "D:/STM32_Projects/Common/**/*.cpp"
 )
 list(FILTER USER_SOURCES EXCLUDE REGEX ".*/Core/Src/[^/]+\\.c$")
+
+# Detección inteligente de periféricos HAL en el proyecto actual:
+# Si el proyecto no incluye el driver I2C de la HAL, excluir Common/I2C
+file(GLOB_RECURSE HAS_HAL_I2C "${CMAKE_CURRENT_SOURCE_DIR}/Drivers/**/*i2c*.c")
+if(NOT HAS_HAL_I2C)
+    list(FILTER USER_SOURCES EXCLUDE REGEX ".*/Common/I2C/.*")
+endif()
+
+# Si el proyecto no incluye el driver UART de la HAL, excluir Common/UART
+file(GLOB_RECURSE HAS_HAL_UART "${CMAKE_CURRENT_SOURCE_DIR}/Drivers/**/*uart*.c")
+if(NOT HAS_HAL_UART)
+    list(FILTER USER_SOURCES EXCLUDE REGEX ".*/Common/UART/.*")
+endif()
+
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE ${USER_SOURCES})
 
 # 2. Búsqueda automática de carpetas con archivos de cabecera (.h y .hpp) en Core y Common
@@ -17,6 +31,12 @@ file(GLOB_RECURSE HEADER_FILES CONFIGURE_DEPENDS
     "D:/STM32_Projects/Common/**/*.h"
     "D:/STM32_Projects/Common/**/*.hpp"
 )
+if(NOT HAS_HAL_I2C)
+    list(FILTER HEADER_FILES EXCLUDE REGEX ".*/Common/I2C/.*")
+endif()
+if(NOT HAS_HAL_UART)
+    list(FILTER HEADER_FILES EXCLUDE REGEX ".*/Common/UART/.*")
+endif()
 set(USER_INCLUDE_DIRS "")
 foreach(HEADER_FILE ${HEADER_FILES})
     get_filename_component(HEADER_DIR ${HEADER_FILE} DIRECTORY)
@@ -27,11 +47,13 @@ if(USER_INCLUDE_DIRS)
 endif()
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE ${USER_INCLUDE_DIRS})
 
-# 3. Soporte de flotantes en printf/sprintf
-target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
-    -u_printf_float
-    -u_scanf_float
-)
+# 3. Soporte de flotantes en printf/sprintf (opcional para ahorrar Flash en MCUs pequeños)
+if (ENABLE_PRINTF_FLOAT)
+    target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
+        -u_printf_float
+        -u_scanf_float
+    )
+endif()
 
 # 4. Remoción automática de main.c de todos los posibles targets (Librería y Ejecutable)
 # Evita compilar main.c si CubeMX lo añade a la biblioteca stm32cubemx o directamente al ejecutable
