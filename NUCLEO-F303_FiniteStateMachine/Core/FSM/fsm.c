@@ -4,7 +4,7 @@
 #include "stm32f3xx_hal_gpio.h"
 
 static FSM_Config_HandleTypeDef pConfig;
-static volatile FSM_Event_TypeDef currentEvent = STATE_NO_LED_SEQUENCE;
+static volatile FSM_State_TypeDef currentState = FSM_STATE_OFF;
 
 static void LEDs_Off(void);
 static void LEDs_Toggle(void);
@@ -78,28 +78,28 @@ static void Run_LEDs_Sequence(GPIO_TypeDef *port1, uint16_t pin1,
 
 void FSM_Process(void)
 {
-    static FSM_Event_TypeDef previousEvent = STATE_NO_LED_SEQUENCE;
+    static FSM_State_TypeDef previousState = FSM_STATE_OFF;
     static uint32_t lastTick = 0;
     static uint8_t step = 0;
 
     uint32_t currentTick = HAL_GetTick();
 
-    if (currentEvent != previousEvent)
+    if (currentState != previousState)
     {
-        previousEvent = currentEvent;
+        previousState = currentState;
         LEDs_Off();
         step = 0;
         lastTick = currentTick;
     }
 
-    switch(currentEvent)
+    switch(currentState)
     {
-        case STATE_NO_LED_SEQUENCE:
+        case FSM_STATE_OFF:
             LEDs_Off();
             step = 0;
             break;
             
-        case STATE_LED_SEQUENCE_1:
+        case FSM_STATE_CASCADE_UP:
             if ((currentTick - lastTick) >= 250)
             {
                 lastTick = currentTick;
@@ -110,7 +110,7 @@ void FSM_Process(void)
                                   &step);
             }
             break;
-        case STATE_LED_SEQUENCE_2:
+        case FSM_STATE_CASCADE_DOWN:
             if ((currentTick - lastTick) >= 250)
             {
                 lastTick = currentTick;
@@ -122,7 +122,7 @@ void FSM_Process(void)
             }
             break;
         
-        case STATE_LED_SEQUENCE_3:
+        case FSM_STATE_PATTERN_CUSTOM:
             if ((currentTick - lastTick) >= 250)
             {
                 lastTick = currentTick;
@@ -141,7 +141,7 @@ void FSM_Process(void)
             }
             break;
 
-        case STATE_LED_SEQUENCE_4:
+        case FSM_STATE_STROBE:
             if ((currentTick - lastTick) >= 100)
             {
                 lastTick = currentTick;
@@ -151,7 +151,7 @@ void FSM_Process(void)
             break;
             
         default:
-            currentEvent = STATE_NO_LED_SEQUENCE;
+            currentState = FSM_STATE_OFF;
             break;
     }
 }
@@ -189,6 +189,6 @@ void Button_Process_EXTI_Callback(uint16_t btnPin)
     {
         lastButtonTick = currentTick;
 
-        currentEvent = (FSM_Event_TypeDef)((currentEvent + 1) % NUMBER_OF_SEQUENCES);
+        currentState = (FSM_State_TypeDef)((currentState + 1) % FSM_STATE_TOTAL_NUM);
     }
 }

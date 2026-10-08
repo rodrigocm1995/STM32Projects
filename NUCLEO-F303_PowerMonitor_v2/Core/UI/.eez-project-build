@@ -1,0 +1,21 @@
+{
+  "files": [
+    "actions.h",
+    "fonts.h",
+    "images.c",
+    "images.h",
+    "screens.c",
+    "screens.h",
+    "structs.h",
+    "styles.c",
+    "styles.h",
+    "ui.c",
+    "ui.h",
+    "ui_font_abee_zee_14.c",
+    "ui_font_abee_zee_24.c",
+    "ui_font_amiko_10.c",
+    "ui_font_amiko_12.c",
+    "ui_font_azeebee_12.c",
+    "vars.h"
+  ]
+}

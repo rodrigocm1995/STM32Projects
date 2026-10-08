@@ -1,0 +1,1142 @@
+#include "ui_events.h"
+#include "screens.h"
+#include "ui.h"
+#include "lvgl.h"
+#include "power_sim.h"
+#include "power_read.h"
+#include "Display_Driver.h"
+#include "settings_mgr.h"
+#include <stdlib.h>
+#include "console_uart.h"
+
+typedef enum 
+{
+    MODE_BRIGHTNESS,
+    MODE_CURRENT_LIMIT,
+    MODE_OVP_LIMIT
+} LimitMode_t;
+
+/* Estructura para rotar entre los modos disponibles */
+typedef struct 
+{
+    uint8_t mode_val;
+    const char *text;
+} AdcModeOption_t;
+
+/* Estructura para rotas entre las muestras (samples) disponibles */
+typedef struct 
+{
+    uint8_t sample_val;
+    const char *text;
+} SampleOption_t;
+
+static const AdcModeOption_t s_adc_modes[] = {
+    { 0x0F, "CONT: T + S + B" },  /* Continuo Tensión + Corriente + Temperatura (Defecto) */
+    { 0x0E, "CONT: T + S"     },
+    { 0x0D, "CONT: T + B"     },  
+    { 0x0C, "CONT: T"         },  
+    { 0x0B, "CONT: S + B"     },  
+    { 0x0A, "CONT: S"         },  
+    { 0x09, "CONT: B"         },
+    { 0x07, "OS: T + S + B"   },
+    { 0x06, "OS: T + S"       },
+    { 0x05, "OS: T + B"       },
+    { 0x04, "OS: T"          },
+    { 0x03, "OS: S + B"      },
+    { 0x02, "OS: S"          },
+    { 0x01, "OS: B"          },
+    { 0x00, "SHUTDOWN"       }
+};
+
+static const SampleOption_t s_adc_samples[] = {
+    {0x00, "1 Sample"},
+    {0x01, "4 Samples"},
+    {0x02, "16 Samples"},
+    {0x03, "64 samples"},
+    {0x04, "128 samples"},
+    {0x05, "256 samples"},
+    {0x06, "512 samples"},
+    {0x07, "1024 samples"}
+};
+
+#define ADC_MODE_COUNT (sizeof(s_adc_modes) / sizeof(s_adc_modes[0]))
+#define ADC_SAMPLES_COUNT (sizeof(s_adc_samples) / sizeof(s_adc_samples[0]))
+
+static LimitMode_t g_active_limit_mode = MODE_BRIGHTNESS;
+static float g_temp_current_limit = 5.0f;
+static float g_temp_ovp_limit     = 50.0f;
+/* Variable de estado temporal para la pantalla ADC */
+static uint8_t g_temp_adc_range = 0; /* 0: +- 163.84 mV, 1: +-40.96 mV */
+static uint8_t g_temp_adc_mode = 0x0F;
+static uint8_t g_temp_adc_sample = 0x03; // 64 samples
+
+/* Variables de estado de Brillo */
+static uint8_t g_saved_brightness = 100;
+static uint8_t g_temp_brightness  = 100;
+
+static const char* get_mode_text(uint8_t mode_val)
+{
+    for (int i = 0; i < ADC_MODE_COUNT; i++) 
+    {
+        if (s_adc_modes[i].mode_val == mode_val) 
+        {
+            return s_adc_modes[i].text;
+        }
+    }
+    return "CONT: T + S + B";
+}
+
+static const char* get_sample_text(uint8_t sample_val)
+{
+    for (int i = 0; i < ADC_SAMPLES_COUNT; i++)
+    {
+        if (s_adc_samples[i].sample_val == sample_val)
+        {
+            return s_adc_samples[i].text;
+        }
+    }
+    return "64 samples";
+}
+
+/* Índice de opción seleccionada en menu_screen (0: efuse, 1: cc, 2: ovp, 3: backlight, 4: ina) */
+static int g_selected_menu_index = 0;
+
+/* Declaraciones anticipadas de callbacks y setup */
+static void setup_menu_screen(void);
+static void setup_limit_screen(void);
+static void setup_reset_modal(void);
+static void setup_ina228_adc_screen(void);
+static void setup_ina228_cal_screen(void);
+static void setup_ina228_alert_screen(void);
+static void setup_ina228_limits_screen(void);
+
+static void on_btn_menu_select_clicked(lv_event_t *e);
+static void on_btn_menu_enter_clicked(lv_event_t *e);
+static void on_btn_menu_back_clicked(lv_event_t *e);
+static void on_btn_menu_edit1_clicked(lv_event_t *e);
+static void on_btn_menu_edit2_changed(lv_event_t *e);
+static void on_btn_menu_edit3_clicked(lv_event_t *e);
+static void on_btn_menu_edit4_clicked(lv_event_t *e);
+static void on_btn_menu_edit5_clicked(lv_event_t *e);
+static void on_box_clicked(lv_event_t *e);
+
+static void on_limit_slider_changed(lv_event_t *e);
+static void on_btn_limit_dec_clicked(lv_event_t *e);
+static void on_btn_limit_inc_clicked(lv_event_t *e);
+static void on_btn_limit_preset1_clicked(lv_event_t *e);
+static void on_btn_limit_preset2_clicked(lv_event_t *e);
+static void on_btn_limit_preset3_clicked(lv_event_t *e);
+static void on_btn_limit_cancel_clicked(lv_event_t *e);
+static void on_btn_limit_save_clicked(lv_event_t *e);
+
+static void on_btn_modal_abort_clicked(lv_event_t *e);
+static void on_btn_modal_reset_clicked(lv_event_t *e);
+
+static void on_btn_adc_cancel_clicked(lv_event_t *e);
+static void on_btn_adc_save_clicked(lv_event_t *e);
+static void on_btn_adc_next_clicked(lv_event_t *e);
+static void on_btn_cal_prev_clicked(lv_event_t *e);
+static void on_btn_cal_save_clicked(lv_event_t *e);
+static void on_btn_cal_next_clicked(lv_event_t *e);
+static void on_btn_alert_prev_clicked(lv_event_t *e);
+static void on_btn_alert_save_clicked(lv_event_t *e);
+static void on_btn_alert_next_clicked(lv_event_t *e);
+static void on_btn_thr_prev_clicked(lv_event_t *e);
+static void on_btn_thr_save_clicked(lv_event_t *e);
+
+static void on_btn_ina228_adc_edit1_clicked(lv_event_t *e);
+static void on_btn_ina228_adc_edit2_clicked(lv_event_t *e);
+static void on_btn_ina228_adc_edit3_clicked(lv_event_t *e);
+
+/* Resalta únicamente el contenedor seleccionado (#383838) y restaura los demás (#272727) */
+static void update_menu_selection_highlight(void)
+{
+    lv_obj_t *boxes[5] = {
+        objects.box_efuse,
+        objects.box_cc,
+        objects.box_ovp,
+        objects.box_dispaly_bl,
+        objects.box_ina_config
+    };
+    for (int i = 0; i < 5; i++) {
+        if (boxes[i] != NULL) {
+            lv_color_t color = (i == g_selected_menu_index) ? lv_color_hex(0x383838) : lv_color_hex(0x272727);
+            
+            lv_obj_set_style_bg_color(boxes[i], color, LV_PART_MAIN | LV_STATE_DEFAULT);
+            lv_obj_set_style_bg_color(boxes[i], color, LV_PART_MAIN | LV_STATE_FOCUSED);
+            lv_obj_set_style_bg_color(boxes[i], color, LV_PART_MAIN | LV_STATE_HOVERED);
+            lv_obj_set_style_bg_color(boxes[i], color, LV_PART_MAIN | LV_STATE_PRESSED);
+            
+            lv_obj_remove_state(boxes[i], LV_STATE_FOCUSED | LV_STATE_HOVERED | LV_STATE_PRESSED);
+        }
+    }
+}
+
+/* Actualizar etiquetas en la pantalla del menú */
+static void update_menu_screen_ui(void)
+{
+    if (objects.lbl_menu_bl != NULL) {
+        lv_label_set_text_fmt(objects.lbl_menu_bl, "%d %%", g_saved_brightness);
+    }
+    
+    if (objects.lbl_val_efuse_limit != NULL) {
+        int i_int = (int)g_user_settings.ocp_limit;
+        int i_dec = (int)(abs((int)((g_user_settings.ocp_limit - i_int) * 100)));
+        lv_label_set_text_fmt(objects.lbl_val_efuse_limit, "%d.%02d A", i_int, i_dec);
+    }
+
+    if (objects.lbl_val_ovp != NULL) {
+        int v_int = (int)g_user_settings.ovp_limit;
+        int v_dec = (int)(abs((int)((g_user_settings.ovp_limit - v_int) * 100)));
+        lv_label_set_text_fmt(objects.lbl_val_ovp, "%d.%02d V", v_int, v_dec);
+    }
+
+    if (objects.btn_menu_edit2 != NULL && objects.lbl_cc_state != NULL) {
+        if (g_user_settings.cc_enabled) {
+            lv_obj_add_state(objects.btn_menu_edit2, LV_STATE_CHECKED);
+            lv_label_set_text(objects.lbl_cc_state, "ON");
+        } else {
+            lv_obj_remove_state(objects.btn_menu_edit2, LV_STATE_CHECKED);
+            lv_label_set_text(objects.lbl_cc_state, "OFF");
+        }
+    }
+
+    update_menu_selection_highlight();
+}
+
+/* Creación Bajo Demanda de menu_screen */
+static void setup_menu_screen(void)
+{
+    if (objects.menu_screen == NULL) {
+        create_screen_menu_screen();
+
+        if (objects.btn_menu_select != NULL) lv_obj_add_event_cb(objects.btn_menu_select, on_btn_menu_select_clicked, LV_EVENT_CLICKED, NULL);
+        if (objects.btn_menu_enter != NULL)  lv_obj_add_event_cb(objects.btn_menu_enter, on_btn_menu_enter_clicked, LV_EVENT_CLICKED, NULL);
+        if (objects.btn_menu_back != NULL)   lv_obj_add_event_cb(objects.btn_menu_back, on_btn_menu_back_clicked, LV_EVENT_CLICKED, NULL);
+        if (objects.btn_menu_edit1 != NULL)  lv_obj_add_event_cb(objects.btn_menu_edit1, on_btn_menu_edit1_clicked, LV_EVENT_CLICKED, NULL);
+        if (objects.btn_menu_edit2 != NULL)  lv_obj_add_event_cb(objects.btn_menu_edit2, on_btn_menu_edit2_changed, LV_EVENT_VALUE_CHANGED, NULL);
+        if (objects.btn_menu_edit3 != NULL)  lv_obj_add_event_cb(objects.btn_menu_edit3, on_btn_menu_edit3_clicked, LV_EVENT_CLICKED, NULL);
+        if (objects.btn_menu_edit4 != NULL)  lv_obj_add_event_cb(objects.btn_menu_edit4, on_btn_menu_edit4_clicked, LV_EVENT_CLICKED, NULL);
+        if (objects.btn_menu_edit5 != NULL)  lv_obj_add_event_cb(objects.btn_menu_edit5, on_btn_menu_edit5_clicked, LV_EVENT_CLICKED, NULL);
+
+        if (objects.box_efuse != NULL)       lv_obj_add_event_cb(objects.box_efuse, on_box_clicked, LV_EVENT_CLICKED, NULL);
+        if (objects.box_cc != NULL)          lv_obj_add_event_cb(objects.box_cc, on_box_clicked, LV_EVENT_CLICKED, NULL);
+        if (objects.box_ovp != NULL)         lv_obj_add_event_cb(objects.box_ovp, on_box_clicked, LV_EVENT_CLICKED, NULL);
+        if (objects.box_dispaly_bl != NULL)  lv_obj_add_event_cb(objects.box_dispaly_bl, on_box_clicked, LV_EVENT_CLICKED, NULL);
+        if (objects.box_ina_config != NULL)  lv_obj_add_event_cb(objects.box_ina_config, on_box_clicked, LV_EVENT_CLICKED, NULL);
+    }
+}
+
+/* Creación Bajo Demanda de limit_screen */
+static void setup_limit_screen(void)
+{
+    if (objects.limit_screen == NULL) {
+        create_screen_limit_screen();
+
+        if (objects.btn_limit_cancel != NULL)  lv_obj_add_event_cb(objects.btn_limit_cancel, on_btn_limit_cancel_clicked, LV_EVENT_CLICKED, NULL);
+        if (objects.btn_limit_save != NULL)    lv_obj_add_event_cb(objects.btn_limit_save, on_btn_limit_save_clicked, LV_EVENT_CLICKED, NULL);
+        if (objects.limit_slider != NULL)      lv_obj_add_event_cb(objects.limit_slider, on_limit_slider_changed, LV_EVENT_VALUE_CHANGED, NULL);
+        if (objects.btn_limit_dec != NULL)     lv_obj_add_event_cb(objects.btn_limit_dec, on_btn_limit_dec_clicked, LV_EVENT_CLICKED, NULL);
+        if (objects.btn_limit_inc != NULL)     lv_obj_add_event_cb(objects.btn_limit_inc, on_btn_limit_inc_clicked, LV_EVENT_CLICKED, NULL);
+        if (objects.btn_limit_preset1 != NULL) lv_obj_add_event_cb(objects.btn_limit_preset1, on_btn_limit_preset1_clicked, LV_EVENT_CLICKED, NULL);
+        if (objects.btn_limit_preset2 != NULL) lv_obj_add_event_cb(objects.btn_limit_preset2, on_btn_limit_preset2_clicked, LV_EVENT_CLICKED, NULL);
+        if (objects.btn_limit_preset3 != NULL) lv_obj_add_event_cb(objects.btn_limit_preset3, on_btn_limit_preset3_clicked, LV_EVENT_CLICKED, NULL);
+    }
+}
+
+/* Creación Bajo Demanda de reset_modal */
+static void setup_reset_modal(void)
+{
+    if (objects.reset_modal == NULL) {
+        create_screen_reset_modal();
+
+        if (objects.btn_modal_abort != NULL) lv_obj_add_event_cb(objects.btn_modal_abort, on_btn_modal_abort_clicked, LV_EVENT_CLICKED, NULL);
+        if (objects.btn_modal_reset != NULL) lv_obj_add_event_cb(objects.btn_modal_reset, on_btn_modal_reset_clicked, LV_EVENT_CLICKED, NULL);
+    }
+}
+
+/* Prepara la pantalla 1 del INA228 (ADC) */
+static void setup_ina228_adc_screen(void)
+{
+    if (objects.ina228_adc_screen == NULL) 
+    {
+        create_screen_ina228_adc_screen();
+
+        if (objects.btn_adc_cancel != NULL)
+        {
+            lv_obj_add_event_cb(objects.btn_adc_cancel, on_btn_adc_cancel_clicked, LV_EVENT_CLICKED, NULL);
+        }         
+        if (objects.btn_adc_save != NULL)
+        {
+            lv_obj_add_event_cb(objects.btn_adc_save, on_btn_adc_save_clicked, LV_EVENT_CLICKED, NULL);
+        }           
+        if (objects.btn_adc_next != NULL)
+        {
+            lv_obj_add_event_cb(objects.btn_adc_next, on_btn_adc_next_clicked, LV_EVENT_CLICKED, NULL);
+        }           
+        if (objects.btn_ina228_adc_edit1 != NULL)
+        {
+            lv_obj_add_event_cb(objects.btn_ina228_adc_edit1, on_btn_ina228_adc_edit1_clicked, LV_EVENT_CLICKED, NULL);
+        }
+        
+        if (objects.btn_ina228_adc_edit2 != NULL)
+        {
+            lv_obj_add_event_cb(objects.btn_ina228_adc_edit2, on_btn_ina228_adc_edit2_clicked, LV_EVENT_CLICKED, NULL); 
+        }
+
+        if (objects.btn_ina228_adc_edit3 != NULL)
+        {
+            lv_obj_add_event_cb(objects.btn_ina228_adc_edit3, on_btn_ina228_adc_edit3_clicked, LV_EVENT_CLICKED, NULL); 
+        }
+    }
+
+    // Inicializar con el valor guardado actualmente en Flash
+    g_temp_adc_range = g_user_settings.ina228_adc_range;
+    g_temp_adc_mode = g_user_settings.ina228_mode;
+    g_temp_adc_sample = g_user_settings.ina228_samples;
+
+    if (objects.lbl_val_adc_range != NULL) 
+    {
+        if (g_temp_adc_range == 1) 
+        {
+            lv_label_set_text(objects.lbl_val_adc_range, "+-40.96 mV");
+        } 
+        else 
+        {
+            lv_label_set_text(objects.lbl_val_adc_range, "+- 163.84 mV");
+        }
+    }
+
+    if (objects.lbl_val_adc_mode != NULL) 
+    {
+        lv_label_set_text(objects.lbl_val_adc_mode, get_mode_text(g_temp_adc_mode));
+    }
+
+    if (objects.lbl_val_adc_samples != NULL) 
+    {
+        lv_label_set_text(objects.lbl_val_adc_samples, get_sample_text(g_temp_adc_sample));
+    }
+
+}
+
+/* Prepara las etiquetas al ingresar a la pantalla 2 de Calibración */
+static void setup_ina228_cal_screen(void)
+{
+    if (objects.ina228_cal_screen == NULL) {
+        create_screen_ina228_cal_screen();
+        if (objects.btn_cal_prev != NULL)   lv_obj_add_event_cb(objects.btn_cal_prev, on_btn_cal_prev_clicked, LV_EVENT_CLICKED, NULL);
+        if (objects.btn_cal_save != NULL)   lv_obj_add_event_cb(objects.btn_cal_save, on_btn_cal_save_clicked, LV_EVENT_CLICKED, NULL);
+        if (objects.btn_cal_next != NULL)   lv_obj_add_event_cb(objects.btn_cal_next, on_btn_cal_next_clicked, LV_EVENT_CLICKED, NULL);
+    }
+    uint16_t manuf_id = 0, device_id = 0, shunt_cal = 0;
+    
+    // Si el sensor INA228 está conectado y responde por I2C
+    if (PowerRead_GetDeviceInfo(&manuf_id, &device_id, &shunt_cal) == HAL_OK) {
+        if (objects.lbl_val_manuf_id != NULL)  lv_label_set_text_fmt(objects.lbl_val_manuf_id, "0x%04X", manuf_id);
+        if (objects.lbl_val_device_id != NULL) lv_label_set_text_fmt(objects.lbl_val_device_id, "0x%04X", device_id);
+        if (objects.lbl_val_shunt_cal != NULL) lv_label_set_text_fmt(objects.lbl_val_shunt_cal, "0x%04X", shunt_cal);
+    } 
+    else {
+        // Si el sensor no responde o no está presente, mostrar "-"
+        if (objects.lbl_val_manuf_id != NULL)  lv_label_set_text(objects.lbl_val_manuf_id, "-");
+        if (objects.lbl_val_device_id != NULL) lv_label_set_text(objects.lbl_val_device_id, "-");
+        if (objects.lbl_val_shunt_cal != NULL) lv_label_set_text(objects.lbl_val_shunt_cal, "-");
+    }
+}
+
+/* Prepara la pantalla 3 del INA228 (Alertas) */
+static void setup_ina228_alert_screen(void)
+{
+    if (objects.ina228_alert_screen == NULL) {
+        create_screen_ina228_alert_screen();
+        if (objects.btn_alert_prev != NULL) lv_obj_add_event_cb(objects.btn_alert_prev, on_btn_alert_prev_clicked, LV_EVENT_CLICKED, NULL);
+        if (objects.btn_alert_save != NULL) lv_obj_add_event_cb(objects.btn_alert_save, on_btn_alert_save_clicked, LV_EVENT_CLICKED, NULL);
+        if (objects.btn_alert_next != NULL) lv_obj_add_event_cb(objects.btn_alert_next, on_btn_alert_next_clicked, LV_EVENT_CLICKED, NULL);
+    }
+}
+
+/* Prepara la pantalla 4 del INA228 (Límites) */
+static void setup_ina228_limits_screen(void)
+{
+    if (objects.ina228_limits_screen == NULL) {
+        create_screen_ina228_limits_screen();
+        if (objects.btn_thr_prev != NULL)   lv_obj_add_event_cb(objects.btn_thr_prev, on_btn_thr_prev_clicked, LV_EVENT_CLICKED, NULL);
+        if (objects.btn_thr_save != NULL)   lv_obj_add_event_cb(objects.btn_thr_save, on_btn_thr_save_clicked, LV_EVENT_CLICKED, NULL);
+    }
+}
+
+/* Función auxiliar multimodo para previsualizar el slider y las etiquetas */
+static void update_limit_preview(int slider_val)
+{
+    if (g_active_limit_mode == MODE_BRIGHTNESS) {
+        if (slider_val < 0) slider_val = 0;
+        if (slider_val > 100) slider_val = 100;
+        
+        g_temp_brightness = (uint8_t)slider_val;
+
+        if (objects.limit_slider != NULL && lv_slider_get_value(objects.limit_slider) != slider_val) {
+            lv_slider_set_value(objects.limit_slider, slider_val, LV_ANIM_OFF);
+        }
+        if (objects.lbl_limit_val != NULL) {
+            lv_label_set_text_fmt(objects.lbl_limit_val, "%d", slider_val);
+        }
+
+        Display_SetBrightness(g_temp_brightness);
+    }
+    else if (g_active_limit_mode == MODE_CURRENT_LIMIT) {
+        if (slider_val < 0) slider_val = 0;
+        if (slider_val > 650) slider_val = 650;
+        
+        g_temp_current_limit = slider_val / 100.0f;
+
+        if (objects.limit_slider != NULL && lv_slider_get_value(objects.limit_slider) != slider_val) {
+            lv_slider_set_value(objects.limit_slider, slider_val, LV_ANIM_OFF);
+        }
+        if (objects.lbl_limit_val != NULL) {
+            int i_int = (int)g_temp_current_limit;
+            int i_dec = (int)(abs((int)((g_temp_current_limit - i_int) * 100)));
+            lv_label_set_text_fmt(objects.lbl_limit_val, "%d.%02d", i_int, i_dec);
+        }
+    }
+    else if (g_active_limit_mode == MODE_OVP_LIMIT) 
+    {
+        if (slider_val < 100) slider_val = 100;
+        if (slider_val > 5400) slider_val = 5400;
+        
+        g_temp_ovp_limit = slider_val / 100.0f;
+
+        if (objects.limit_slider != NULL && lv_slider_get_value(objects.limit_slider) != slider_val) 
+        {
+            lv_slider_set_value(objects.limit_slider, slider_val, LV_ANIM_OFF);
+        }
+
+        if (objects.lbl_limit_val != NULL) 
+        {
+            int v_int = slider_val / 100;
+            int v_dec = slider_val % 100;
+            lv_label_set_text_fmt(objects.lbl_limit_val, "%d.%02d", v_int, v_dec);
+        }
+    }
+}
+
+static void setup_current_limit_screen(void)
+{
+    setup_limit_screen();
+    g_active_limit_mode = MODE_CURRENT_LIMIT;
+    g_temp_current_limit = g_user_settings.ocp_limit;
+
+    if (objects.lbl_limit_text != NULL) {
+        lv_label_set_text(objects.lbl_limit_text, "CURRENT LIMIT ADJUSTMENT (eFuse)");
+    }
+    if (objects.lbl_limit_unit != NULL) {
+        lv_label_set_text(objects.lbl_limit_unit, "A");
+    }
+    if (objects.lbl_limit_min != NULL) {
+        lv_label_set_text(objects.lbl_limit_min, "0.00 A");
+    }
+    if (objects.lbl_limit_max != NULL) {
+        lv_label_set_text(objects.lbl_limit_max, "6.50 A");
+        lv_obj_update_layout(objects.lbl_limit_max); 
+        lv_obj_set_x(objects.lbl_limit_max, lv_obj_get_x(objects.lbl_limit_max));
+    }
+
+    if (objects.label_limit_dec != NULL) {
+        lv_label_set_text(objects.label_limit_dec, "-0.5A");
+    }
+    if (objects.label_limit_inc != NULL) {
+        lv_label_set_text(objects.label_limit_inc, "+0.5A");
+    }
+    if (objects.label_limit_preset1 != NULL) {
+        lv_label_set_text(objects.label_limit_preset1, "1.0 A");
+    }
+    if (objects.label_limit_preset2 != NULL) {
+        lv_label_set_text(objects.label_limit_preset2, "3.0 A");
+    }
+    if (objects.label_limit_preset3 != NULL) {
+        lv_label_set_text(objects.label_limit_preset3, "5.0 A");
+    }
+
+    if (objects.limit_slider != NULL) {
+        lv_slider_set_range(objects.limit_slider, 0, 650);
+        int slider_val = (int)(g_temp_current_limit * 100.0f);
+        lv_slider_set_value(objects.limit_slider, slider_val, LV_ANIM_OFF);
+    }
+    
+    if (objects.lbl_limit_val != NULL) {
+        int i_int = (int)g_temp_current_limit;
+        int i_dec = (int)(abs((int)((g_temp_current_limit - i_int) * 100)));
+        lv_label_set_text_fmt(objects.lbl_limit_val, "%d.%02d", i_int, i_dec);
+    }
+}
+
+static void setup_ovp_limit_screen(void)
+{
+    setup_limit_screen();
+    g_active_limit_mode = MODE_OVP_LIMIT;
+    g_temp_ovp_limit = g_user_settings.ovp_limit;
+
+    if (objects.lbl_limit_text != NULL) {
+        lv_label_set_text(objects.lbl_limit_text, "OVERVOLTAGE PROTECTION (OVP)");
+    }
+    if (objects.lbl_limit_unit != NULL) {
+        lv_label_set_text(objects.lbl_limit_unit, "V");
+    }
+    if (objects.lbl_limit_min != NULL) {
+        lv_label_set_text(objects.lbl_limit_min, "1.00 V");
+    }
+    if (objects.lbl_limit_max != NULL) {
+        lv_label_set_text(objects.lbl_limit_max, "54.00 V");
+        lv_obj_update_layout(objects.lbl_limit_max); 
+        lv_obj_set_x(objects.lbl_limit_max, 255);
+    }
+
+    if (objects.label_limit_dec != NULL) {
+        lv_label_set_text(objects.label_limit_dec, "-0.1V");
+    }
+    if (objects.label_limit_inc != NULL) {
+        lv_label_set_text(objects.label_limit_inc, "+0.1V");
+    }
+    if (objects.label_limit_preset1 != NULL) {
+        lv_label_set_text(objects.label_limit_preset1, "5.5 V");
+    }
+    if (objects.label_limit_preset2 != NULL) {
+        lv_label_set_text(objects.label_limit_preset2, "12.0 V");
+    }
+    if (objects.label_limit_preset3 != NULL) {
+        lv_label_set_text(objects.label_limit_preset3, "24.0 V");
+    }
+
+    if (objects.limit_slider != NULL) {
+        lv_slider_set_range(objects.limit_slider, 100, 5400);
+        int slider_val = (int)(g_temp_ovp_limit * 100.0f);
+        lv_slider_set_value(objects.limit_slider, slider_val, LV_ANIM_OFF);
+    }
+    
+    if (objects.lbl_limit_val != NULL) {
+        int v_int = (int)g_temp_ovp_limit;
+        int v_dec = (int)(abs((int)((g_temp_ovp_limit - v_int) * 100)));
+        lv_label_set_text_fmt(objects.lbl_limit_val, "%d.%02d", v_int, v_dec);
+    }
+}
+
+static void setup_brightness_screen(void)
+{
+    setup_limit_screen();
+    g_active_limit_mode = MODE_BRIGHTNESS;
+    g_temp_brightness = g_saved_brightness;
+
+    if (objects.lbl_limit_text != NULL) {
+        lv_label_set_text(objects.lbl_limit_text, "DISPLAY BRIGHTNESS ADJUSTMENT");
+    }
+    if (objects.lbl_limit_unit != NULL) {
+        lv_label_set_text(objects.lbl_limit_unit, "%");
+    }
+    if (objects.lbl_limit_min != NULL) {
+        lv_label_set_text(objects.lbl_limit_min, "0 %");
+    }
+    if (objects.lbl_limit_max != NULL) {
+        lv_label_set_text(objects.lbl_limit_max, "100 %");
+        lv_obj_update_layout(objects.lbl_limit_max); 
+        lv_obj_set_x(objects.lbl_limit_max, 261);
+    }
+
+    if (objects.label_limit_dec != NULL) {
+        lv_label_set_text(objects.label_limit_dec, "-10%");
+    }
+    if (objects.label_limit_inc != NULL) {
+        lv_label_set_text(objects.label_limit_inc, "+10%");
+    }
+    if (objects.label_limit_preset1 != NULL) {
+        lv_label_set_text(objects.label_limit_preset1, "10%");
+    }
+    if (objects.label_limit_preset2 != NULL) {
+        lv_label_set_text(objects.label_limit_preset2, "50%");
+    }
+    if (objects.label_limit_preset3 != NULL) {
+        lv_label_set_text(objects.label_limit_preset3, "100%");
+    }
+
+    if (objects.limit_slider != NULL) {
+        lv_slider_set_range(objects.limit_slider, 0, 100);
+        lv_slider_set_value(objects.limit_slider, g_temp_brightness, LV_ANIM_OFF);
+    }
+    if (objects.lbl_limit_val != NULL) {
+        lv_label_set_text_fmt(objects.lbl_limit_val, "%d", g_temp_brightness);
+    }
+}
+
+
+/* ===================================================================
+   CALLBACKS DE NAVEGACIÓN Y EVENTOS TÁCTILES
+   =================================================================== */
+
+static void on_btn_menu_select_clicked(lv_event_t *e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED)
+    {
+        g_selected_menu_index = (g_selected_menu_index + 1) % 5;
+        update_menu_selection_highlight();
+    }
+}
+
+static void on_btn_menu_enter_clicked(lv_event_t *e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED)
+    {
+        switch (g_selected_menu_index) {
+            case 0: /* box_efuse (Límite de Corriente) */
+                setup_limit_screen();
+                loadScreen(SCREEN_ID_LIMIT_SCREEN);
+                setup_current_limit_screen();
+                if (objects.menu_screen != NULL) {
+                    lv_obj_del(objects.menu_screen);
+                    objects.menu_screen = NULL;
+                }
+                break;
+            case 2: /* box_ovp (Límite OVP) */
+                setup_limit_screen();
+                loadScreen(SCREEN_ID_LIMIT_SCREEN);
+                setup_ovp_limit_screen();
+                if (objects.menu_screen != NULL) {
+                    lv_obj_del(objects.menu_screen);
+                    objects.menu_screen = NULL;
+                }
+                break;
+            case 3: /* box_dispaly_bl (Brillo) */
+                setup_limit_screen();
+                loadScreen(SCREEN_ID_LIMIT_SCREEN);
+                setup_brightness_screen();
+                if (objects.menu_screen != NULL) {
+                    lv_obj_del(objects.menu_screen);
+                    objects.menu_screen = NULL;
+                }
+                break;
+            case 4: /* box_ina_config (INA228 Wizard) */
+                setup_ina228_adc_screen();
+                loadScreen(SCREEN_ID_INA228_ADC_SCREEN);
+                if (objects.menu_screen != NULL) {
+                    lv_obj_del(objects.menu_screen);
+                    objects.menu_screen = NULL;
+                }
+                break;
+            default:
+                break;
+        }
+    }
+}
+
+static void on_btn_main_config_clicked(lv_event_t *e) {
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        setup_menu_screen();
+        loadScreen(SCREEN_ID_MENU_SCREEN);
+        update_menu_screen_ui();
+    }
+}
+
+static void on_btn_limit_cancel_clicked(lv_event_t *e) {
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        if (g_active_limit_mode == MODE_BRIGHTNESS) {
+            Display_SetBrightness(g_saved_brightness);
+        }
+        setup_menu_screen();
+        loadScreen(SCREEN_ID_MENU_SCREEN);
+        update_menu_screen_ui();
+        if (objects.limit_screen != NULL) {
+            lv_obj_del(objects.limit_screen);
+            objects.limit_screen = NULL;
+        }
+    }
+}
+
+static void on_btn_limit_save_clicked(lv_event_t *e) {
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        if (g_active_limit_mode == MODE_BRIGHTNESS) {
+            g_saved_brightness = g_temp_brightness;
+            g_user_settings.brightness = g_saved_brightness;
+            Settings_Save();
+        } 
+        else if (g_active_limit_mode == MODE_CURRENT_LIMIT) {
+            g_user_settings.ocp_limit = g_temp_current_limit;
+            g_power_sim.ocp_limit = g_user_settings.ocp_limit;
+            Settings_Save();
+        }
+        else if (g_active_limit_mode == MODE_OVP_LIMIT) {
+            g_user_settings.ovp_limit = g_temp_ovp_limit;
+            g_power_sim.ovp_limit = g_user_settings.ovp_limit;
+            Settings_Save();
+        }
+
+        setup_menu_screen();
+        loadScreen(SCREEN_ID_MENU_SCREEN);
+        update_menu_screen_ui();
+        if (objects.limit_screen != NULL) {
+            lv_obj_del(objects.limit_screen);
+            objects.limit_screen = NULL;
+        }
+    }
+}
+
+static void on_btn_graph_clicked(lv_event_t *e) {
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        setup_menu_screen();
+        loadScreen(SCREEN_ID_MENU_SCREEN);
+        update_menu_screen_ui();
+    }
+}
+
+static void on_btn_main_rst_clicked(lv_event_t *e) {
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        setup_reset_modal();
+        loadScreen(SCREEN_ID_RESET_MODAL);
+    }
+}
+
+static void on_btn_modal_abort_clicked(lv_event_t *e) {
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        loadScreen(SCREEN_ID_MAIN_SCREEN);
+        if (objects.reset_modal != NULL) {
+            lv_obj_del(objects.reset_modal);
+            objects.reset_modal = NULL;
+        }
+    }
+}
+
+static void on_btn_modal_reset_clicked(lv_event_t *e) {
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        PowerSim_ResetStats();
+        loadScreen(SCREEN_ID_MAIN_SCREEN);
+        if (objects.reset_modal != NULL) {
+            lv_obj_del(objects.reset_modal);
+            objects.reset_modal = NULL;
+        }
+    }
+}
+
+static void on_btn_menu_back_clicked(lv_event_t *e) {
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        loadScreen(SCREEN_ID_MAIN_SCREEN);
+        if (objects.menu_screen != NULL) {
+            lv_obj_del(objects.menu_screen);
+            objects.menu_screen = NULL;
+        }
+    }
+}
+
+static void on_btn_menu_edit1_clicked(lv_event_t *e) {
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        g_selected_menu_index = 0; /* Opción 1: eFuse */
+        setup_limit_screen();
+        loadScreen(SCREEN_ID_LIMIT_SCREEN);
+        setup_current_limit_screen();
+        if (objects.menu_screen != NULL) {
+            lv_obj_del(objects.menu_screen);
+            objects.menu_screen = NULL;
+        }
+    }
+}
+
+static void on_btn_menu_edit3_clicked(lv_event_t *e) {
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        g_selected_menu_index = 2; /* Opción 3: OVP */
+        setup_limit_screen();
+        loadScreen(SCREEN_ID_LIMIT_SCREEN);
+        setup_ovp_limit_screen();
+        if (objects.menu_screen != NULL) {
+            lv_obj_del(objects.menu_screen);
+            objects.menu_screen = NULL;
+        }
+    }
+}
+
+static void on_btn_menu_edit4_clicked(lv_event_t *e) {
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        g_selected_menu_index = 3;
+        setup_limit_screen();
+        loadScreen(SCREEN_ID_LIMIT_SCREEN);
+        setup_brightness_screen();
+        if (objects.menu_screen != NULL) {
+            lv_obj_del(objects.menu_screen);
+            objects.menu_screen = NULL;
+        }
+    }
+}
+
+static void on_btn_menu_edit5_clicked(lv_event_t *e) {
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        g_selected_menu_index = 4; /* Opción 5: INA Config */
+        setup_ina228_adc_screen();
+        loadScreen(SCREEN_ID_INA228_ADC_SCREEN);
+        if (objects.menu_screen != NULL) {
+            lv_obj_del(objects.menu_screen);
+            objects.menu_screen = NULL;
+        }
+    }
+}
+
+/* Eventos de Switch CC */
+static void on_btn_menu_edit2_changed(lv_event_t *e) {
+    if (lv_event_get_code(e) == LV_EVENT_VALUE_CHANGED) {
+        bool is_on = lv_obj_has_state(objects.btn_menu_edit2, LV_STATE_CHECKED);
+        if (objects.lbl_cc_state != NULL) {
+            lv_label_set_text(objects.lbl_cc_state, is_on ? "ON" : "OFF");
+        }
+        g_user_settings.cc_enabled = is_on ? 1 : 0;
+        Settings_Save();
+    }
+}
+
+/* Eventos de Slider y Controles Multimodo */
+static void on_limit_slider_changed(lv_event_t *e) {
+    if (lv_event_get_code(e) == LV_EVENT_VALUE_CHANGED) {
+        int val = lv_slider_get_value(objects.limit_slider);
+        update_limit_preview(val);
+    }
+}
+
+static void on_btn_limit_dec_clicked(lv_event_t *e) {
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        if (g_active_limit_mode == MODE_BRIGHTNESS) {
+            update_limit_preview(g_temp_brightness - 10);
+        } else if (g_active_limit_mode == MODE_CURRENT_LIMIT) {
+            int slider_val = (int)(g_temp_current_limit * 100.0f) - 50;
+            update_limit_preview(slider_val);
+        } else if (g_active_limit_mode == MODE_OVP_LIMIT) {
+            int slider_val = (int)(g_temp_ovp_limit * 100.0f) - 10;
+            update_limit_preview(slider_val);
+        }
+    }
+}
+
+static void on_btn_limit_inc_clicked(lv_event_t *e) {
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        if (g_active_limit_mode == MODE_BRIGHTNESS) {
+            update_limit_preview(g_temp_brightness + 10);
+        } else if (g_active_limit_mode == MODE_CURRENT_LIMIT) {
+            int slider_val = (int)(g_temp_current_limit * 100.0f) + 50;
+            update_limit_preview(slider_val);
+        } else if (g_active_limit_mode == MODE_OVP_LIMIT) {
+            int slider_val = (int)(g_temp_ovp_limit * 100.0f) + 10;
+            update_limit_preview(slider_val);
+        }
+    }
+}
+
+static void on_btn_limit_preset1_clicked(lv_event_t *e) {
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        if (g_active_limit_mode == MODE_BRIGHTNESS) {
+            update_limit_preview(10);
+        } else if (g_active_limit_mode == MODE_CURRENT_LIMIT) {
+            update_limit_preview(100);
+        } else if (g_active_limit_mode == MODE_OVP_LIMIT) {
+            update_limit_preview(550);
+        }
+    }
+}
+
+static void on_btn_limit_preset2_clicked(lv_event_t *e) {
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        if (g_active_limit_mode == MODE_BRIGHTNESS) {
+            update_limit_preview(50);
+        } else if (g_active_limit_mode == MODE_CURRENT_LIMIT) {
+            update_limit_preview(300);
+        } else if (g_active_limit_mode == MODE_OVP_LIMIT) {
+            update_limit_preview(1200);
+        }
+    }
+}
+
+static void on_btn_limit_preset3_clicked(lv_event_t *e) {
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        if (g_active_limit_mode == MODE_BRIGHTNESS) {
+            update_limit_preview(100);
+        } else if (g_active_limit_mode == MODE_CURRENT_LIMIT) {
+            update_limit_preview(500);
+        } else if (g_active_limit_mode == MODE_OVP_LIMIT) {
+            update_limit_preview(2400);
+        }
+    }
+}
+
+static void on_box_clicked(lv_event_t *e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED)
+    {
+        lv_obj_t *target = lv_event_get_target(e);
+        if (target == objects.box_efuse) g_selected_menu_index = 0;
+        else if (target == objects.box_cc) g_selected_menu_index = 1;
+        else if (target == objects.box_ovp) g_selected_menu_index = 2;
+        else if (target == objects.box_dispaly_bl) g_selected_menu_index = 3;
+        else if (target == objects.box_ina_config) g_selected_menu_index = 4;
+        update_menu_selection_highlight();
+    }
+}
+
+/* NAVEGACIÓN Y LIBERACIÓN DINÁMICA DEL WIZARD INA228 */
+
+static void on_btn_adc_cancel_clicked(lv_event_t *e) 
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) 
+    {
+        setup_menu_screen();
+        loadScreen(SCREEN_ID_MENU_SCREEN);
+        if (objects.ina228_adc_screen != NULL) {
+            lv_obj_del(objects.ina228_adc_screen);
+            objects.ina228_adc_screen = NULL;
+        }
+    }
+}
+
+static void on_btn_adc_save_clicked(lv_event_t *e) 
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) 
+    {
+
+        uint8_t readback_range = 99; 
+        uint8_t readback_mode  = 99;
+        uint8_t readback_sample  = 99;
+
+        // 1. Guardar en memoria Flash para que persista tras reinicios
+        g_user_settings.ina228_adc_range = g_temp_adc_range;
+        g_user_settings.ina228_mode      = g_temp_adc_mode;
+        g_user_settings.ina228_samples   = g_temp_adc_sample;
+
+        Settings_Save();
+
+        // 2. Aplicar el rango al INA228 físico
+        PowerRead_SetAdcRange(g_user_settings.ina228_adc_range);
+        PowerRead_SetMode(g_user_settings.ina228_mode);
+        PowerRead_SetAverage(g_user_settings.ina228_samples);
+
+        // 3. Volver al menú principal y destruir la pantalla
+        setup_menu_screen();
+        loadScreen(SCREEN_ID_MENU_SCREEN);
+        update_menu_screen_ui();
+        if (objects.ina228_adc_screen != NULL) 
+        {
+            lv_obj_del(objects.ina228_adc_screen);
+            objects.ina228_adc_screen = NULL;
+        }
+
+        if (PowerRead_GetAdcRange(&readback_range) == HAL_OK && 
+            PowerRead_GetMode(&readback_mode) == HAL_OK && 
+            PowerRead_GetAverage(&readback_sample) == HAL_OK) 
+        {
+            Console_Printf("Guardado exitoso -> ADC Range: %d | Mode: 0x%02X (%s) | Avg: 0x%02X (%s)\r\n", 
+                           readback_range, readback_mode, get_mode_text(readback_mode), readback_sample, get_sample_text(readback_sample));
+        }
+    }
+}
+
+static void on_btn_adc_next_clicked(lv_event_t *e) 
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) 
+    {
+        lv_obj_t *old_scr = objects.ina228_adc_screen;
+        setup_ina228_cal_screen();
+        loadScreen(SCREEN_ID_INA228_CAL_SCREEN);
+        if (old_scr != NULL) {
+            lv_obj_del(old_scr);
+            objects.ina228_adc_screen = NULL;
+        }
+    }
+}
+
+static void on_btn_cal_prev_clicked(lv_event_t *e) 
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) 
+    {
+        lv_obj_t *old_scr = objects.ina228_cal_screen;
+        setup_ina228_adc_screen();
+        loadScreen(SCREEN_ID_INA228_ADC_SCREEN);
+        if (old_scr != NULL) {
+            lv_obj_del(old_scr);
+            objects.ina228_cal_screen = NULL;
+        }
+    }
+}
+
+static void on_btn_cal_save_clicked(lv_event_t *e) 
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) 
+    {
+        setup_menu_screen();
+        loadScreen(SCREEN_ID_MENU_SCREEN);
+        if (objects.ina228_cal_screen != NULL) {
+            lv_obj_del(objects.ina228_cal_screen);
+            objects.ina228_cal_screen = NULL;
+        }
+    }
+}
+
+static void on_btn_cal_next_clicked(lv_event_t *e) 
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) 
+    {
+        lv_obj_t *old_scr = objects.ina228_cal_screen;
+        setup_ina228_alert_screen();
+        loadScreen(SCREEN_ID_INA228_ALERT_SCREEN);
+        if (old_scr != NULL) {
+            lv_obj_del(old_scr);
+            objects.ina228_cal_screen = NULL;
+        }
+    }
+}
+
+static void on_btn_alert_prev_clicked(lv_event_t *e) 
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) 
+    {
+        lv_obj_t *old_scr = objects.ina228_alert_screen;
+        setup_ina228_cal_screen();
+        loadScreen(SCREEN_ID_INA228_CAL_SCREEN);
+        if (old_scr != NULL) {
+            lv_obj_del(old_scr);
+            objects.ina228_alert_screen = NULL;
+        }
+    }
+}
+
+static void on_btn_alert_save_clicked(lv_event_t *e) 
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) 
+    {
+        setup_menu_screen();
+        loadScreen(SCREEN_ID_MENU_SCREEN);
+        if (objects.ina228_alert_screen != NULL) {
+            lv_obj_del(objects.ina228_alert_screen);
+            objects.ina228_alert_screen = NULL;
+        }
+    }
+}
+
+static void on_btn_alert_next_clicked(lv_event_t *e) 
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) 
+    {
+        lv_obj_t *old_scr = objects.ina228_alert_screen;
+        setup_ina228_limits_screen();
+        loadScreen(SCREEN_ID_INA228_LIMITS_SCREEN);
+        if (old_scr != NULL) {
+            lv_obj_del(old_scr);
+            objects.ina228_alert_screen = NULL;
+        }
+    }
+}
+
+static void on_btn_thr_prev_clicked(lv_event_t *e) 
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) 
+    {
+        lv_obj_t *old_scr = objects.ina228_limits_screen;
+        setup_ina228_alert_screen();
+        loadScreen(SCREEN_ID_INA228_ALERT_SCREEN);
+        if (old_scr != NULL) {
+            lv_obj_del(old_scr);
+            objects.ina228_limits_screen = NULL;
+        }
+    }
+}
+
+static void on_btn_thr_save_clicked(lv_event_t *e) 
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) 
+    {
+        setup_menu_screen();
+        loadScreen(SCREEN_ID_MENU_SCREEN);
+        if (objects.ina228_limits_screen != NULL) {
+            lv_obj_del(objects.ina228_limits_screen);
+            objects.ina228_limits_screen = NULL;
+        }
+    }
+}
+
+/* Callback cuando se presiona el botón Edit (btn_ina228_adc_edit1) */
+static void on_btn_ina228_adc_edit1_clicked(lv_event_t *e) 
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) 
+    {
+        // Alternar entre 0 (+- 163.84 mV) y 1 (+-40.96 mV)
+        g_temp_adc_range = (g_temp_adc_range == 0) ? 1 : 0;
+        if (objects.lbl_val_adc_range != NULL) {
+            if (g_temp_adc_range == 1) 
+            {
+                lv_label_set_text(objects.lbl_val_adc_range, "+-40.96 mV");
+            } 
+            else 
+            {
+                lv_label_set_text(objects.lbl_val_adc_range, "+- 163.84 mV");
+            }
+        }
+    }
+}
+
+static void on_btn_ina228_adc_edit2_clicked(lv_event_t *e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED)
+    {
+        int current_idx = 0;
+        for (int i = 0; i < ADC_MODE_COUNT; i++) {
+            if (s_adc_modes[i].mode_val == g_temp_adc_mode) 
+            {
+                current_idx = i;
+                break;
+            }
+        }
+
+        // Rotar al siguiente modo cíclicamente
+        current_idx = (current_idx + 1) % ADC_MODE_COUNT;
+        g_temp_adc_mode = s_adc_modes[current_idx].mode_val;
+
+        if (objects.lbl_val_adc_mode != NULL) 
+        {
+            lv_label_set_text(objects.lbl_val_adc_mode, s_adc_modes[current_idx].text);
+        }
+    }
+}
+
+static void on_btn_ina228_adc_edit3_clicked(lv_event_t *e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED)
+    {
+        int current_idx = 0;
+        for (int i = 0; i < ADC_SAMPLES_COUNT; i++) 
+        {
+            if (s_adc_samples[i].sample_val == g_temp_adc_sample) 
+            {
+                current_idx = i;
+                break;
+            }
+        }
+
+        // Rotar al siguiente modo cíclicamente
+        current_idx = (current_idx + 1) % ADC_SAMPLES_COUNT;
+        g_temp_adc_sample = s_adc_samples[current_idx].sample_val;
+
+        if (objects.lbl_val_adc_samples != NULL) 
+        {
+            lv_label_set_text(objects.lbl_val_adc_samples, s_adc_samples[current_idx].text);
+        }
+    }
+}
+
+/* Vinculación General de Eventos para la pantalla principal (main_screen) */
+void UI_Events_Init(void)
+{
+    g_saved_brightness = g_user_settings.brightness;
+    g_temp_brightness  = g_saved_brightness;
+
+    if (objects.btn_main_config != NULL) 
+    {
+        lv_obj_add_event_cb(objects.btn_main_config, on_btn_main_config_clicked, LV_EVENT_CLICKED, NULL);
+    }
+
+    if (objects.btn_main_graph != NULL) 
+    {
+        lv_obj_add_event_cb(objects.btn_main_graph, on_btn_graph_clicked, LV_EVENT_CLICKED, NULL);
+    }
+
+    if (objects.btn_main_rst != NULL) 
+    {
+        lv_obj_add_event_cb(objects.btn_main_rst, on_btn_main_rst_clicked, LV_EVENT_CLICKED, NULL);
+    }
+}
